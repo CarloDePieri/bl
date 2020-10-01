@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+#
+# An utility to manage my bluetooth headsets and quickly fix it when it does not connect.
+
+from appdirs import AppDirs
+import argparse
+from configparser import ConfigParser
+import os
+import pexpect
+import re
+import subprocess
+from typing import List, Tuple
+
+
+def get_ini_file_dir() -> str:
+    """Get config file user directory."""
+    app = AppDirs("bl", "CarloDePieri")
+    return app.user_config_dir
+
+
+def get_ini_file_path() -> str:
+    """Get full config file path."""
+    return os.path.join(get_ini_file_dir(), "config.ini")
+
+
+def config_file_needs_init(config_file_path: str) -> bool:
+    """Return True if the config file is not found"""
+    return not os.path.isfile(config_file_path)
+
+
+def init_config_file(config_file_path: str):
+    """Create the config file dir and prepare a starting config file."""
+    config_dir = get_ini_file_dir()
+    if not os.path.isdir(config_dir):
+        # Prepare config location
+        os.mkdir(config_dir)
+    if not os.path.isfile(config_file_path):
+        # Prepare empty config file
+        config = ConfigParser()
+        config['Default'] = {"key": ""}
+        config['Name'] = {}
+        config['Address'] = {}
+        with open(config_file_path, "w") as fp:
+            config.write(fp)
+
+
+def get_config_data():
+    """Recover config data from the config file, init it if necessary."""
+    config_file_path = get_ini_file_path()
+    if config_file_needs_init(config_file_path):
+        init_config_file(config_file_path)
+        print(f"[WARN] {config_file_path} file prepared. You now need to edit it!")
+        print(f"\n{get_example_config_ini()}")
+        exit()
+    config = ConfigParser()
+    config.read(config_file_path)
+    default_device_key = config["Default"]["key"]
+    names, addresses = config["Name"], config["Address"]
+    validate_config_data(config)
+    devices = {}
+    for device_key in config['Name']:
+        devices[device_key] = {
+            "name": config["Name"][device_key],
+            "address": config["Address"][device_key]
+        }
+    return devices, default_device_key
+
+
+def get_example_config_ini() -> str:
+    """Return a string that contains an example of a working config file."""
+    return """This is an example of a correct config file:
+
+[Default]
+key = mydevice
+
+[Name]
+mydevice = My complete device name
+
+[Address]
+mydevice = 00:00:00:00:00:00
+    """
+
+
+def validate_config_data(config: ConfigParser):
+    """Validate the config data retrieved from the config file, exit if invalid."""
+    default_device_key = config["Default"]["key"]
+    names, addresses = config["Name"], config["Address"]
+    invalid = f"[ERR] Invalid config file at {get_ini_file_path()}.\n\n"
+    error = False
+    if default_device_key == "":
+        invalid += " - The 'key' field in [Default] section can't be empty!\n"
+        error = True
+    if len(default_device_key) > 0 and default_device_key not in names:
+        invalid += f" - The default device key '{default_device_key}' must have a device name!\n"
+        error = True
+    if len(default_device_key) > 0 and default_device_key not in addresses:
+        invalid += f" - The default device key '{default_device_key}' must have a device address!\n"
+        error = True
+    for key in names:
+        if key not in addresses:
+            invalid += f" - The '{key}' field in [Name] section must be present in the [Address] section!\n"
+            error = True
+    for key in addresses:
+        if key not in names:
+            invalid += f" - The '{key}' field in [Address] section must be present in the [Name] section!\n"
+            error = True
+    for key in addresses:
+        addr = addresses[key]
+        bt_regex = r"([0-9A-F]{2}):([0-9A-F]{2}):([0-9A-F]{2}):([0-9A-F]{2}):([0-9A-F]{2}):([0-9A-F]{2})"
+        match = re.search(bt_regex, addr, re.MULTILINE)
+        if match is None:
+            invalid += f" - The '{key}' field in [Address] ({addr}) is not a valid bluetooth address!\n"
+            error = True
+    if error:
+        print(invalid)
+        print(get_example_config_ini())
+        exit(1)
+
+
+def get_device_data(device_key: str, devices) -> Tuple[str, str]:
+    """Return device data if given a valid device_key."""
+    if device_key not in devices:
+        print(f"[ERR] The key '{device_key}' is not present in the config file.")
+        exit(1)
+    return devices[device_key]["name"], devices[device_key]["address"]
+
+
+def parse_command_line(default_device_name: str, default_device_key: str) -> argparse.Namespace:
+    """Parse the command line."""
+    description = """
+    An utility to manage my bluetooth headset device. If called with no
+    specified command argument will default to 'go'. If the device
+    fails to connect, try the 'fix' command first.
+    """
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument('-k', '--key', help="the device key from the config file", default=default_device_key)
+
+    subparsers = parser.add_subparsers(dest='command', help='command help')
+
+    description = """
+    Turn on bluetooth and connect to the device (by default '{}')
+    """.format(default_device_name)
+    subparsers.add_parser('go', help='turn on bluetooth and connect to the device',
+                          description=description)
+
+    description = "Check if the device (by default '{}') is connected."
+    subparsers.add_parser('status', help='check device connection',
+                          description=description, aliases=["s"])
+
+    description = "Simply turn on bluetooth."
+    subparsers.add_parser('on', help='turn on bluetooth',
+                          description=description)
+
+    description = "Simply turn off bluetooth."
+    subparsers.add_parser('off', help='turn off bluetooth', description=description)
+
+    description = "Connect to the device (by default '{}')".format(default_device_name)
+    subparsers.add_parser('connect', help='connect to the device',
+                          description=description, aliases=["c"])
+
+    description = """
+    Try to reset the connection with the default strategy (pair) and to connect
+    to the device (by default '{}').
+    """.format(default_device_name)
+    subparsers.add_parser('fix', help='reset and connect to the device',
+                          description=description, aliases=["f"])
+
+    description = "Try to reset the connection in many ways, see additional parameters."
+    parser_reset = subparsers.add_parser('reset', help='reset the connection', description=description)
+    methods = parser_reset.add_subparsers(required=True, dest='method', help='reset method help')
+
+    description = """
+    Unpair and pair the device, by default '{}'. Make sure the device
+    is in pair mode.""".format(default_device_name)
+    parser_m = methods.add_parser('pair', help='unpair and pair the device', description=description)
+
+    description = "Reset the systemd bluetooth daemon."
+    parser_m = methods.add_parser('systemd', help='reset systemd', description=description)
+
+    description = "Unload and reload the btusb kernel module."
+    parser_m = methods.add_parser('driver', help='reset kernel module', description=description)
+
+    description = "Reset the rfkill toggle."
+    parser_m = methods.add_parser('rfkill', help='reset rfkill', description=description)
+
+    return parser.parse_args()
+
+
+def exec_command(command: List[str]) -> int:
+    """Run the a command in a subprocess and return the returncode."""
+    p = subprocess.run(command, capture_output=True)
+    return p.returncode
+
+
+def systemctl_command(command: str) -> int:
+    """Run a specific command on the systemd bluetooth daemon. Return the returncode."""
+    return exec_command(f"sudo systemctl {command} bluetooth".split(" "))
+
+
+def reset_driver():
+    """Unload the bluetooth kernel module and reload it."""
+    returncode = exec_command("sudo modprobe -r btusb".split(" "))
+    if returncode != 0:
+        print("[ERR] Could not unmount btusb kernel module.")
+        exit(returncode)
+    returncode = exec_command("sudo modprobe btusb".split(" "))
+    if returncode != 0:
+        print("[ERR] Could not remount btusb kernel module.")
+        exit(returncode)
+
+
+def reset_rfkill():
+    """Unblock rfkill block on bluetooth."""
+    returncode = exec_command("sudo rfkill unblock bluetooth".split(" "))
+    if returncode != 0:
+        print("[ERR] Could not unblock rfkill.")
+        exit(returncode)
+
+
+def reset_systemd():
+    """Restart systemd bluetooth daemon."""
+    returncode = systemctl_command("restart")
+    if returncode != 0:
+        print("[ERR] Could not restart systemd daemon.")
+        exit(returncode)
+
+
+class BTCtl:
+    """Class used to interact with the bluetoothctl utility."""
+
+    def __init__(self, timeout=6):
+        """Create an instance of bluetoothctl. Send commands to it with the exec method.
+
+        :param timeout: how many seconds to wait a command result"""
+        self.process = pexpect.spawn("bluetoothctl", timeout=timeout,
+                                     echo=False)
+
+    def exec(self, command: str, success_regex: str, failure_regex: str) -> None:
+        """Send a command to the bluetoothctl instance. Will return None if successful, raise a 
+        BluetoothcltError otherwise.
+
+        :param command: the command to send
+        :param success_regex: the regex to look for in case of a successful result
+        :param failure_regex: the regex to look for in case of a failure"""
+
+        self.process.send(f"{command}\n")
+
+        result = self.process.expect([success_regex, failure_regex,
+                                      pexpect.EOF, pexpect.TIMEOUT])
+
+        if result == 3:
+            print("[ERR] TIMED OUT! Is the systemd daemon up?")
+            exit(3)
+        elif result == 2:
+            print("[ERR] Crashed!")
+            exit(2)
+        elif result == 1:
+            raise BluetoothctlError(
+                "Bluetoothctl failed after running " + command)
+
+
+def power_on():
+    """Power on the default bluetooth controller."""
+    try:
+        systemctl_command("start")
+        BTCtl().exec(
+            command="power on",
+            success_regex="Changing power on succeeded",
+            failure_regex="failed"
+        )
+        print("[ON] Bluetooth powered on!")
+    except BluetoothctlError:
+        print(f"[ERR] Could not connect to {device_name}!")
+        exit(1)
+
+
+def power_off():
+    """Power off the default bluetooth controller."""
+    try:
+        BTCtl().exec(
+            command="power off",
+            success_regex="Changing power off succeeded",
+            failure_regex="failed"
+        )
+        systemctl_command("stop")
+        print("[OFF] Bluetooth powered off!")
+    except BluetoothctlError:
+        print(f"[ERR] Could not connect to {device_name}!")
+        exit(1)
+
+
+def connect(device_name: str, device_addr: str):
+    """Connect to the given device."""
+    try:
+        BTCtl().exec(
+            command=f"connect {device_addr}",
+            success_regex="Connection successful",
+            failure_regex="Failed to connect"
+        )
+        print(f"[OK] Connected to {device_name}!")
+    except BluetoothctlError:
+        print(f"[ERR] Could not connect to {device_name}!")
+        exit(1)
+
+
+def reset_pair(device_name: str, device_addr: str):
+    """Reset the device pair, un-pairing and re-pairing it."""
+    bt = BTCtl(timeout=20)
+    try:
+        bt.exec(
+            command=f"remove {device_addr}",
+            success_regex="Device has been removed",
+            failure_regex="not available"
+        )
+        print("[..] Device unpaired!")
+    except BluetoothctlError:
+        print(f"[WARN] Could not unpair {device_name} while resetting the pair system!")
+    try:
+        print("[..] Scanning...")
+        bt.exec(
+            command="scan on",
+            success_regex="NEW.*Soundcore Liberty Air 2",
+            failure_regex="failed"
+        )
+        print("[..] Device found...")
+        bt.exec(
+            command=f"pair {device_addr}",
+            success_regex="Pairing successful",
+            failure_regex="not available"
+        )
+        print("[..] Device paired!")
+        print(f"[OK] Device {device_name} pair successfully reset!")
+    except BluetoothctlError:
+        print(f"[ERR] Could not re-pair {device_name} while resetting the pair system!")
+        exit(1)
+
+
+def status(device_name, device_addr):
+    """Get the connection status of the given device."""
+    try:
+        BTCtl().exec(
+            command=f"info {device_addr}",
+            success_regex="Connected: yes",
+            failure_regex="Connected: no"
+        )
+        print(f"[CONNECTED] The device '{device_name}' is connected!")
+    except BluetoothctlError:
+        print(f"[DISCONNECTED] The device '{device_name}' is not connected!")
+        exit(1)
+
+
+class BluetoothctlError(Exception):
+    """An error when executing a bluetoothctl command."""
+
+
+if __name__ == "__main__":
+
+    # Parse config file
+    devices, default_device_key = get_config_data()
+    default_device_name = devices[default_device_key]["name"]
+
+    # Parse command line
+    args = parse_command_line(default_device_name, default_device_key)
+    device_name, device_addr = get_device_data(args.key, devices)
+
+    if args.command is None or args.command == "go":
+        power_on()
+        connect(device_name, device_addr)
+    elif args.command in ["connect", "c"]:
+        connect(device_name, device_addr)
+    elif args.command in ["fix", "f"]:
+        reset_pair(device_name, device_addr)
+        connect(device_name, device_addr)
+    elif args.command == "on":
+        power_on()
+    elif args.command == "off":
+        power_off()
+    elif args.command in ["status", "s"]:
+        status(device_name, device_addr)
+    elif args.command == "reset":
+        if args.method == "pair":
+            reset_pair(device_name, device_addr)
+        elif args.method == "systemd":
+            reset_systemd()
+        elif args.method == "driver":
+            reset_driver()
+        elif args.method == "rfkill":
+            reset_rfkill()
