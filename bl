@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# An utility to manage my bluetooth headsets and quickly fix it when it does not connect.
+# An utility to manage my bluetooth headsets and quickly fix them when they do not connect.
 
 from appdirs import AppDirs
 import argparse
@@ -128,7 +128,7 @@ def get_device_data(device_key: str, devices) -> Tuple[str, str]:
 def parse_command_line(default_device_name: str, default_device_key: str) -> argparse.Namespace:
     """Parse the command line."""
     description = """
-    An utility to manage my bluetooth headset device. If called with no
+    An utility to manage my bluetooth headsets device. If called with no
     specified command argument will default to 'go'. If the device
     fails to connect, try the 'fix' command first.
     """
@@ -237,7 +237,7 @@ class BTCtl:
 
     def exec(self, command: str, success_regex: str, failure_regex: str) -> None:
         """Send a command to the bluetoothctl instance. Will return None if successful, raise a 
-        BluetoothcltError otherwise.
+        BluetoothctlError otherwise.
 
         :param command: the command to send
         :param success_regex: the regex to look for in case of a successful result
