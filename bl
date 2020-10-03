@@ -8,7 +8,9 @@ from configparser import ConfigParser
 import os
 import pexpect
 import re
+from signal import Signals, signal, SIGINT
 import subprocess
+from types import FrameType
 from typing import List, Tuple
 
 
@@ -353,7 +355,16 @@ class BluetoothctlError(Exception):
     """An error when executing a bluetoothctl command."""
 
 
+def signal_handler(sig: Signals, frame: FrameType) -> None:
+    """Handler used to exit on ctrl-c."""
+    print("\n\n[QUIT] Bye!")
+    exit(0)
+
+
 if __name__ == "__main__":
+
+    # Set the handler to catch ctrl-c
+    signal(SIGINT, signal_handler)
 
     # Parse config file
     devices, default_device_key = get_config_data()
