@@ -62,8 +62,8 @@ def get_config_data():
     devices = {}
     for device_key in config['Name']:
         devices[device_key] = {
-            "name": config["Name"][device_key],
-            "address": config["Address"][device_key]
+            "name": names[device_key],
+            "address": addresses[device_key]
         }
     return devices, default_device_key
 
@@ -135,7 +135,8 @@ def parse_command_line(default_device_name: str, default_device_key: str) -> arg
     fails to connect, try the 'fix' command first.
     """
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument('-k', '--key', help="the device key from the config file", default=default_device_key)
+    parser.add_argument('-k', '--key', help="the device key from the config file",
+                        default=default_device_key)
 
     subparsers = parser.add_subparsers(dest='command', help='command help')
 
@@ -168,22 +169,23 @@ def parse_command_line(default_device_name: str, default_device_key: str) -> arg
                           description=description, aliases=["f"])
 
     description = "Try to reset the connection in many ways, see additional parameters."
-    parser_reset = subparsers.add_parser('reset', help='reset the connection', description=description)
+    parser_reset = subparsers.add_parser(
+        'reset', help='reset the connection', description=description)
     methods = parser_reset.add_subparsers(required=True, dest='method', help='reset method help')
 
     description = """
     Unpair and pair the device, by default '{}'. Make sure the device
     is in pair mode.""".format(default_device_name)
-    parser_m = methods.add_parser('pair', help='unpair and pair the device', description=description)
+    methods.add_parser('pair', help='unpair and pair the device', description=description)
 
     description = "Reset the systemd bluetooth daemon."
-    parser_m = methods.add_parser('systemd', help='reset systemd', description=description)
+    methods.add_parser('systemd', help='reset systemd', description=description)
 
     description = "Unload and reload the btusb kernel module."
-    parser_m = methods.add_parser('driver', help='reset kernel module', description=description)
+    methods.add_parser('driver', help='reset kernel module', description=description)
 
     description = "Reset the rfkill toggle."
-    parser_m = methods.add_parser('rfkill', help='reset rfkill', description=description)
+    methods.add_parser('rfkill', help='reset rfkill', description=description)
 
     return parser.parse_args()
 
